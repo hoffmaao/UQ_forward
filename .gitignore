@@ -1,0 +1,5 @@
+*.h5
+*.xdmf
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
