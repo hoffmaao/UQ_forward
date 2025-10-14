@@ -3,10 +3,9 @@ import icepack
 import matplotlib.pyplot as plt
 import numpy as np
 import math
-import sympy
-from sympy import legendre as sympy_legendre
 
 def generate_surface(s,b,sigma):
+    X=firedrake.interpolate(mesh.coordinates, V).dat.data_ro
     error = np.random.normal(0,sigma, size=s.dat.data.shape)
     s_obs = s.copy(deepcopy=True)
     s_obs.dat.data[:]=error+s.dat.data[:]
@@ -14,40 +13,8 @@ def generate_surface(s,b,sigma):
     
     return s_obs 
     
-def compute_surface_velocity(q):
-	r"""Return the weighted depth average of a function on an extruded mesh"""
-	def weight(n, ζ):
-		"""Compute the normalization factor for Legendre polynomials."""
-		norm = sympy.integrate(sympy_legendre(n, ζ) ** 2, (ζ, 0, 1))  # L2 norm squared
-		return sympy_legendre(n, ζ) / norm  # Return symbolic expression
-
-	def legendre(n, ζ):
-		"""Map Legendre polynomial to the domain [0,1]."""
-		return sympy_legendre(n, 2 * ζ - 1)
-
-	Q = q.function_space()
-	mesh = Q.mesh()
-	ζ = firedrake.SpatialCoordinate(mesh)[mesh.geometric_dimension() - 1]
-
-	xdegree_q, zdegree_q = q.ufl_element().degree()
-
-	ζsym = sympy.symbols("ζsym", positive=True)
-
-	full_weight_symbolic = sum(
-		[
-	    	legendre(k, 1) * weight(k, ζsym)  # Symbolic expression
-	    	for k in range(zdegree_q)
-		]
-	).doit() 
-
-	weight_function_numeric = sympy.lambdify(ζsym, full_weight_symbolic, "numpy")
-
-	# Compute the weighted depth average
-	q_surface = icepack.utilities.depth_average(q, weight=weight_function_numeric(ζ))
-
-	return q_surface
-
 def generate_velocity(u,sigma):
+    X=firedrake.interpolate(mesh.coordinates, V).dat.data_ro
     error = np.random.normal(0,sigma, size=u.dat.data.shape)
     u_obs = u.copy(deepcopy=True)
     u_obs.dat.data[:]=error+u.dat.data[:]
@@ -80,34 +47,24 @@ def friction(**kwargs):
     return -m / (m + 1) * firedrake.inner(τ, u)
 
 
+
 L=40000
 
-nx, ny = 100, 100  # resolution
-mesh2d = firedrake.PeriodicRectangleMesh(nx, ny, L, L, direction='x')
-mesh = firedrake.ExtrudedMesh(mesh2d, layers=1)
-
+nx, ny = 40, 40  # resolution
+mesh = firedrake.PeriodicRectangleMesh(nx, ny, L, L, direction='x',name="ismip-c")
 
 fig, axes = plt.subplots()
 axes.set_aspect("equal")
-firedrake.triplot(mesh2d, axes=axes)
+firedrake.triplot(mesh, axes=axes)
 axes.legend(loc="upper right");
 fig.savefig('mesh.png')
 
-V = firedrake.VectorFunctionSpace(
-    mesh, "CG", 2, dim=2, vfamily="GL", vdegree=2
-)
-
-Q = firedrake.FunctionSpace(
-    mesh, "CG", 2, vfamily="R", vdegree=0
-)
-
-U = firedrake.FunctionSpace(
-    mesh, "DG", 2, vfamily="R", vdegree=0
-)
+V = firedrake.VectorFunctionSpace(mesh, 'CG', 2)
+Q = firedrake.FunctionSpace(mesh, 'CG', 2)
+U = firedrake.FunctionSpace(mesh, 'DG', 2)
 
 # Extract coordinates
-x, y, ζ = firedrake.SpatialCoordinate(mesh)
-
+x, y = firedrake.SpatialCoordinate(mesh)
 
 # Define surface elevation
 s = firedrake.Function(U, name="surface")
@@ -159,7 +116,7 @@ opts = {
 #    'side_wall_ids': [1, 2],
 #}
 
-model = icepack.models.HybridModel(friction=friction)
+model = icepack.models.IceStream(friction=friction)
 flow_solver = icepack.solvers.FlowSolver(model,**opts)
 u = flow_solver.diagnostic_solve(
     thickness=h,
@@ -170,16 +127,12 @@ u = flow_solver.diagnostic_solve(
     fluidity=A
 )
 
-
-u_s=compute_surface_velocity(u)
-V_s=u_s.function_space()
 sigma = 1.0
-u_obs = firedrake.Function(V_s, name="u_obs")
-
-u_obs = generate_velocity(u_s,sigma)
+u_obs = firedrake.Function(V, name="u_obs")
+u_obs = generate_velocity(u,sigma)
 
 fig, (ax1,ax2) = plt.subplots(2,1)
-colors_u = firedrake.tripcolor(u_s, axes=ax1)
+colors_u = firedrake.tripcolor(u, axes=ax1)
 fig.colorbar(colors_u, ax=ax1, fraction=0.012, pad=0.04);
 
 colors_u_obs = firedrake.tripcolor(u_obs, axes=ax2)
@@ -187,17 +140,17 @@ fig.colorbar(colors_u_obs, ax=ax2, fraction=0.012, pad=0.04);
 fig.savefig('velocity.png')
 
 fig, ax = plt.subplots()
-colors_beta = firedrake.tripcolor(icepack.utilities.depth_average(beta), axes=ax)
+colors_beta = firedrake.tripcolor(beta, axes=ax)
 fig.colorbar(colors_beta, ax=ax, fraction=0.012, pad=0.04);
 fig.savefig('beta.png')
 
 
 
-with firedrake.CheckpointFile("ismip-c.h5", "w") as checkpoint:
+with firedrake.CheckpointFile("../mesh/ismip-c.h5", "w") as checkpoint:
     checkpoint.save_mesh(mesh)
-    checkpoint.save_function(beta)
-    checkpoint.save_function(u)
-    checkpoint.save_function(u_obs)
-    checkpoint.save_function(bed)
-    checkpoint.save_function(s)
-    checkpoint.save_function(h)
+    checkpoint.save_function(beta, name="friction")
+    checkpoint.save_function(u, name="velocity")
+    checkpoint.save_function(u_obs, name="velocity_obs")
+    checkpoint.save_function(bed, name="bed")
+    checkpoint.save_function(s, name="surface")
+    checkpoint.save_function(h, name="thickness")
